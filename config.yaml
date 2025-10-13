@@ -1,0 +1,7 @@
+subvolumes:
+  "@nixos",
+  "@storage",
+  "@dotfiles",
+subvoldir: "/mnt/top-level"
+snapshot_dir: "/mnt/top-level/.snapshots/"
+retention_time: 600000  # in seconds
