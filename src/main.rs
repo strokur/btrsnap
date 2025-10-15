@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use btrfsutil::subvolume::{DeleteFlags, SnapshotFlags, Subvolume};
 use chrono::{Duration, TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use humantime::Duration as HumanDuration;
-use log::{debug, error, info};
-use std::env;
+use log::{debug, info};
+use nix::unistd::Uid;
 use std::fs;
 use std::path::PathBuf;
 use toml::Value;
@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 #[command(name = "btrsnap", about = "Manage BTRFS snapshots")]
 struct Cli {
     /// Path to configuration file (TOML)
-    #[arg(long)]
+    #[arg(short = 'c', long)]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
@@ -24,10 +24,10 @@ struct Cli {
 enum Commands {
     /// Create a snapshot of the given subvolume(s)
     Create {
-        /// Path to subvolume (repeatable; if none, use config or default)
-        #[arg(short = 's', long, value_parser = parse_path)]
+        /// Path to subvolume (repeatable; if none, use config)
+        #[arg(short = 'v', long, value_parser = parse_path)]
         subvol: Vec<PathBuf>,
-        /// Snapshot dir (if not set, use config/env/default)
+        /// Snapshot dir (if not set, use config)
         #[arg(short = 'd', long, value_parser = parse_path)]
         snap_dir: Option<PathBuf>,
     },
@@ -39,13 +39,13 @@ enum Commands {
     },
     /// List snapshots with info
     List {
-        /// Snapshot dir to scan (if not set, use config/env/default)
+        /// Snapshot dir to scan (if not set, use config)
         #[arg(short, long, value_parser = parse_path)]
         dir: Option<PathBuf>,
     },
     /// Cleanup snapshots older than duration (e.g., 7d)
     Cleanup {
-        /// Snapshot dir to scan (if not set, use config/env/default)
+        /// Snapshot dir to scan (if not set, use config)
         #[arg(short, long, value_parser = parse_path)]
         dir: Option<PathBuf>,
         /// Retention duration (e.g., 7d, 30m)
@@ -54,88 +54,87 @@ enum Commands {
     },
 }
 
-fn default_subvol_base() -> PathBuf {
-    env::var("BTRFS")
-        .ok()
-        .and_then(|s| PathBuf::from(s).canonicalize().ok())
-        .unwrap_or_else(|| PathBuf::from("/mnt/top-level"))
-}
-
-fn default_snap_dir() -> PathBuf {
-    env::var("SNAPSHOTS")
-        .ok()
-        .and_then(|s| PathBuf::from(s).canonicalize().ok())
-        .unwrap_or_else(|| default_subvol_base().join(".snapshots"))
-}
-
 fn main() -> Result<()> {
     env_logger::init();
     info!("Starting btrsnap");
 
     let cli = Cli::parse();
-    if env::var("SUDO_UID").is_err() {
-        eprintln!("Warning: Run with sudo for BTRFS ops.");
+
+    if !Uid::effective().is_root() {
+        bail!("Error: Must run with sudo or as root for BTRFS operations");
     }
 
-    // Load defaults from env/hardcoded
-    let mut subvol_base = default_subvol_base();
-    let mut snap_dir_default = default_snap_dir();
-    let mut subvol_names: Vec<String> = vec![];
-    let mut default_subvols: Vec<PathBuf> = vec![];
+    // Initialize paths and subvolume names
+    let mut snap_dir: Option<PathBuf> = None;
+    let mut toml_subvols: Vec<PathBuf> = vec![];
 
-    // If --config provided, override with file values
+    // Load from config file if provided
     if let Some(config_path) = cli.config {
         if !config_path.exists() {
-            error!("Config file not found: {}", config_path.display());
-            anyhow::bail!("Config file not found: {}", config_path.display());
+            bail!("Config file not found: {}", config_path.display());
         }
         let content = fs::read_to_string(&config_path).context("Invalid TOML in config file")?;
         let config_toml: Value = toml::from_str(&content).context("Invalid TOML in config file")?;
 
-        if let Some(base_str) = config_toml.get("subvol_base").and_then(|v| v.as_str()) {
-            if let Ok(base_path) = PathBuf::from(base_str).canonicalize() {
-                subvol_base = base_path;
-            }
-        }
+        // Load snap_dir (required)
+        let snap_str = config_toml
+            .get("snap_dir")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'snap_dir' in config file"))?;
+        snap_dir = Some(
+            PathBuf::from(snap_str)
+                .canonicalize()
+                .context("Invalid 'snap_dir' path in config")?,
+        );
 
-        if let Some(snap_str) = config_toml.get("snap_dir").and_then(|v| v.as_str()) {
-            if let Ok(snap_path) = PathBuf::from(snap_str).canonicalize() {
-                snap_dir_default = snap_path;
-            }
-        }
-
+        // Load subvol_names and subvol_base if subvol_names is present
         if let Some(names_arr) = config_toml.get("subvol_names").and_then(|v| v.as_array()) {
-            subvol_names = names_arr
+            let subvol_names: Vec<String> = names_arr
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect();
+            if !subvol_names.is_empty() {
+                // Require subvol_base only if subvol_names is non-empty
+                let base_str = config_toml
+                    .get("subvol_base")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'subvol_base' in config file (required when 'subvol_names' is provided)"))?;
+                let subvol_base = PathBuf::from(base_str)
+                    .canonicalize()
+                    .context("Invalid 'subvol_base' path in config")?;
+                toml_subvols = subvol_names
+                    .iter()
+                    .map(|name| subvol_base.join(name))
+                    .collect();
+            }
         }
-
-        // Compute default subvols from base + names
-        default_subvols = subvol_names
-            .iter()
-            .map(|name| subvol_base.join(name))
-            .collect();
     }
 
     match cli.command {
-        Commands::Create { subvol, snap_dir } => {
-            let subvols_to_snap = if subvol.is_empty() {
-                if default_subvols.is_empty() {
-                    error!("No subvolumes specified, and no 'subvol_names' in config");
-                    anyhow::bail!("No subvolumes specified, and no 'subvol_names' in config. Provide --subvol or configure.");
-                }
-                default_subvols
-            } else {
-                subvol
-            };
-            let snap_dir = snap_dir.unwrap_or(snap_dir_default);
+        Commands::Create {
+            subvol: cli_subvols,
+            snap_dir: cli_snap_dir,
+        } => {
+            // Require snap_dir (from CLI or config)
+            let snap_dir = cli_snap_dir.or(snap_dir).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Snapshot directory must be specified via --snap-dir or config file"
+                )
+            })?;
             if !snap_dir.exists() {
-                error!("Snapshot directory {} does not exist", snap_dir.display());
-                anyhow::bail!("Snapshot directory {} does not exist", snap_dir.display());
+                bail!("Snapshot directory {} does not exist", snap_dir.display());
             }
-            info!("Creating snapshots in {}", snap_dir.display());
 
+            // Require subvolumes (from CLI or config)
+            let subvols_to_snap = if !cli_subvols.is_empty() {
+                cli_subvols
+            } else if !toml_subvols.is_empty() {
+                toml_subvols
+            } else {
+                bail!("No subvolumes specified. Provide --subvol or 'subvol_names' in config.");
+            };
+
+            info!("Creating snapshots in {}", snap_dir.display());
             let ts = Utc::now().timestamp();
             for sv in &subvols_to_snap {
                 let subvol_name = sv.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
@@ -167,8 +166,9 @@ fn main() -> Result<()> {
         }
         Commands::Delete { snap } => {
             if snap.is_empty() {
-                error!("No snapshots specified for deletion");
-                anyhow::bail!("No snapshots specified. Use --snap <path> to specify snapshots to delete, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>");
+                bail!(
+                    "No snapshots specified. Use --snap <path> to specify snapshots to delete, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>"
+                );
             }
             for s in snap {
                 debug!("Deleting snapshot: {}", s.display());
@@ -180,11 +180,12 @@ fn main() -> Result<()> {
                 println!("Deleted: {}", s.display());
             }
         }
-        Commands::List { dir } => {
-            let dir = dir.unwrap_or(snap_dir_default);
+        Commands::List { dir: cli_dir } => {
+            let dir = cli_dir.or(snap_dir).ok_or_else(|| {
+                anyhow::anyhow!("Snapshot directory must be specified via --dir or config file")
+            })?;
             if !dir.exists() {
-                error!("Snapshot directory {} does not exist", dir.display());
-                anyhow::bail!("Snapshot directory {} does not exist", dir.display());
+                bail!("Snapshot directory {} does not exist", dir.display());
             }
             info!("Listing snapshots in {}", dir.display());
             for entry in WalkDir::new(&dir)
@@ -207,11 +208,12 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Cleanup { dir, keep } => {
-            let dir = dir.unwrap_or(snap_dir_default);
+        Commands::Cleanup { dir: cli_dir, keep } => {
+            let dir = cli_dir.or(snap_dir).ok_or_else(|| {
+                anyhow::anyhow!("Snapshot directory must be specified via --dir or config file")
+            })?;
             if !dir.exists() {
-                error!("Snapshot directory {} does not exist", dir.display());
-                anyhow::bail!("Snapshot directory {} does not exist", dir.display());
+                bail!("Snapshot directory {} does not exist", dir.display());
             }
             info!(
                 "Cleaning snapshots in {} older than {}",
