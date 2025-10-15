@@ -73,35 +73,38 @@ fn main() -> Result<()> {
         if !config_path.exists() {
             bail!("Config file not found: {}", config_path.display());
         }
-        let content = fs::read_to_string(&config_path).context("Invalid TOML in config file")?;
+        let content = fs::read_to_string(&config_path).context(format!(
+            "Failed to read config file: {}",
+            config_path.display()
+        ))?;
         let config_toml: Value = toml::from_str(&content).context("Invalid TOML in config file")?;
 
-        // Load snap_dir (required)
+        // Load snap-dir (required)
         let snap_str = config_toml
-            .get("snap_dir")
+            .get("snap-dir")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'snap_dir' in config file"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing 'snap-dir' in config file"))?;
         snap_dir = Some(
             PathBuf::from(snap_str)
                 .canonicalize()
-                .context("Invalid 'snap_dir' path in config")?,
+                .context("Invalid 'snap-dir' path in config")?,
         );
 
-        // Load subvol_names and subvol_base if subvol_names is present
-        if let Some(names_arr) = config_toml.get("subvol_names").and_then(|v| v.as_array()) {
+        // Load subvol-names and subvol-base if subvol-names is present
+        if let Some(names_arr) = config_toml.get("subvol-names").and_then(|v| v.as_array()) {
             let subvol_names: Vec<String> = names_arr
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect();
             if !subvol_names.is_empty() {
-                // Require subvol_base only if subvol_names is non-empty
+                // Require subvol-base only if subvol-names is non-empty
                 let base_str = config_toml
-                    .get("subvol_base")
+                    .get("subvol-base")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'subvol_base' in config file (required when 'subvol_names' is provided)"))?;
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'subvol-base' in config file (required when 'subvol-names' is provided)"))?;
                 let subvol_base = PathBuf::from(base_str)
                     .canonicalize()
-                    .context("Invalid 'subvol_base' path in config")?;
+                    .context("Invalid 'subvol-base' path in config")?;
                 toml_subvols = subvol_names
                     .iter()
                     .map(|name| subvol_base.join(name))
@@ -131,7 +134,7 @@ fn main() -> Result<()> {
             } else if !toml_subvols.is_empty() {
                 toml_subvols
             } else {
-                bail!("No subvolumes specified. Provide --subvol or 'subvol_names' in config.");
+                bail!("No subvolumes specified. Provide --subvol or 'subvol-names' in config.");
             };
 
             info!("Creating snapshots in {}", snap_dir.display());
