@@ -1,10 +1,26 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## [0.2.0] - 2025-10-19
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Added
+
+- Support for `cleanup.keep` in TOML configuration to specify retention duration
+  for the `cleanup` command.
+- Support for `BTRSNAP_CONFIG` environment variable to specify the TOML config
+  file path, allowing commands without `--config`.
+
+### Changed
+
+- Bumped version to `0.2.0`.
+- Updated `README.md` to document `cleanup.keep` option and BTRSNAP_CONFIG.
+
+## [0.1.0] - 2025-10-01
+
+### Added
+
+- Initial release with `create`, `delete`, `list`, and `cleanup` commands.
+- TOML configuration support for `subvol-base`, `snap-dir`, and `subvol-names`.
+- CLI options for subvolume paths, snapshot directory, and retention duration.
 
 ## [0.1.0] - 2025-10-15
 

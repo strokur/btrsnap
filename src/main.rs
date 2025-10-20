@@ -2,22 +2,39 @@ use anyhow::{Context, Result, bail};
 use btrfsutil::subvolume::{DeleteFlags, SnapshotFlags, Subvolume};
 use chrono::{Duration, TimeZone, Utc};
 use clap::{Parser, Subcommand};
+use color_print::cstr;
 use humantime::Duration as HumanDuration;
 use log::{debug, info};
 use nix::unistd::Uid;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use toml::Value;
 use walkdir::WalkDir;
 
+const AFTER_HELP: &'static str = cstr!(
+    r#"
+ENVIRONMENT VARIABLES:
+    <bold>BTRSNAP_CONFIG</bold>
+        Path to the TOML configuration file (e.g., /etc/btrsnap.toml).
+        If set, allows running commands like `btrsnap create` without --config.
+"#
+);
+
 #[derive(Parser)]
-#[command(name = "btrsnap", about = "Manage BTRFS snapshots")]
+#[command(
+    name = "btrsnap",
+    about = "Manage BTRFS snapshots",
+    version = "0.2.0",
+    // color = ColorChoice::Always,
+    after_help = AFTER_HELP
+)]
 struct Cli {
     /// Path to configuration file (TOML)
     #[arg(short = 'c', long)]
     config: Option<PathBuf>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -48,9 +65,9 @@ enum Commands {
         /// Snapshot dir to scan (if not set, use config)
         #[arg(short, long, value_parser = parse_path)]
         dir: Option<PathBuf>,
-        /// Retention duration (e.g., 7d, 30m)
+        /// Retention duration (e.g., 7d, 30m; overrides config if set)
         #[arg(short, long)]
-        keep: HumanDuration,
+        keep: Option<HumanDuration>,
     },
 }
 
@@ -118,12 +135,15 @@ impl Commands {
                 if !dir.exists() {
                     bail!("Snapshot directory {} does not exist", dir.display());
                 }
+                let keep_duration = keep.or(toml_cleanup_keep).ok_or_else(|| {
+                    anyhow::anyhow!("Retention duration must be specified via --keep or 'cleanup.keep' in config file")
+                })?;
                 info!(
                     "Cleaning snapshots in {} older than {}",
                     dir.display(),
-                    keep
+                    keep_duration
                 );
-                let cutoff = Utc::now() - Duration::from_std(keep.into())?;
+                let cutoff = Utc::now() - Duration::from_std(keep_duration.into())?;
                 for entry in WalkDir::new(&dir)
                     .max_depth(1)
                     .into_iter()
@@ -218,9 +238,12 @@ fn cleanup_snapshot(entry: walkdir::DirEntry, cutoff: chrono::DateTime<Utc>) -> 
     Ok(())
 }
 
-fn load_config(config_path: Option<PathBuf>) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
+fn load_config(
+    config_path: Option<PathBuf>,
+) -> Result<(Option<PathBuf>, Vec<PathBuf>, Option<HumanDuration>)> {
     let mut snap_dir: Option<PathBuf> = None;
     let mut toml_subvols: Vec<PathBuf> = vec![];
+    let mut toml_cleanup_keep: Option<HumanDuration> = None;
 
     if let Some(path) = config_path {
         if !path.exists() {
@@ -260,8 +283,17 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(Option<PathBuf>, Vec<Pat
                     .collect();
             }
         }
+
+        if let Some(cleanup_table) = config_toml.get("cleanup").and_then(|v| v.as_table()) {
+            if let Some(keep_str) = cleanup_table.get("keep").and_then(|v| v.as_str()) {
+                toml_cleanup_keep = Some(keep_str.parse::<HumanDuration>().context(format!(
+                    "Invalid 'cleanup.keep' duration in config: {}",
+                    keep_str
+                ))?);
+            }
+        }
     }
-    Ok((snap_dir, toml_subvols))
+    Ok((snap_dir, toml_subvols, toml_cleanup_keep))
 }
 
 fn parse_path(s: &str) -> Result<PathBuf> {
@@ -288,6 +320,18 @@ fn main() -> Result<()> {
         bail!("Error: Must run with sudo or as root for BTRFS operations");
     }
 
-    let (snap_dir, toml_subvols) = load_config(cli.config)?;
-    cli.command.execute(snap_dir, toml_subvols)
+    let config_path = cli.config.or_else(|| {
+        env::var("BTRSNAP_CONFIG")
+            .ok()
+            .and_then(|s| PathBuf::from(s).canonicalize().ok())
+    });
+
+    let (snap_dir, toml_subvols, toml_cleanup_keep) = load_config(config_path)?;
+
+    let command = cli.command.unwrap_or(Commands::Create {
+        subvol: vec![],
+        snap_dir: None,
+    });
+
+    command.execute(snap_dir, toml_subvols, toml_cleanup_keep)
 }

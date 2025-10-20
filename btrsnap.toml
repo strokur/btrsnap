@@ -1,3 +1,0 @@
-subvol-base = "/mnt/top-level"
-snap-dir = "/mnt/top-level/.snapshots"
-subvol-names = ["@nixos", "@storage", "@dotfiles"]
