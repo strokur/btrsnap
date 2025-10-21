@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use btrfsutil::subvolume::{DeleteFlags, SnapshotFlags, Subvolume};
 use chrono::{Duration, TimeZone, Utc};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use color_print::cstr;
 use humantime::Duration as HumanDuration;
 use log::{debug, info};
@@ -26,7 +26,6 @@ ENVIRONMENT VARIABLES:
     name = "btrsnap",
     about = "Manage BTRFS snapshots",
     version = "0.2.0",
-    // color = ColorChoice::Always,
     after_help = AFTER_HELP
 )]
 struct Cli {
@@ -50,34 +49,29 @@ enum Commands {
     },
     /// Delete specific snapshot(s)
     Delete {
-        /// Path to snapshot (repeatable, e.g., --snap /path/to/btrfs/snapshots/@home-<timestamp>)
+        /// Path to snapshot (repeatable, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>)
         #[arg(short, long, value_parser = parse_path)]
-        snap: Vec<PathBuf>,
+        snapshot: Vec<PathBuf>,
     },
     /// List snapshots with info
     List {
         /// Snapshot dir to scan (if not set, use config)
-        #[arg(short, long, value_parser = parse_path)]
-        dir: Option<PathBuf>,
+        #[arg(short = 'd', long, value_parser = parse_path)]
+        snap_dir: Option<PathBuf>,
     },
     /// Cleanup snapshots older than duration (e.g., 7d)
     Cleanup {
         /// Snapshot dir to scan (if not set, use config)
-        #[arg(short, long, value_parser = parse_path)]
-        dir: Option<PathBuf>,
-        /// Retention duration (e.g., 7d, 30m; overrides config if set)
+        #[arg(short = 'd', long, value_parser = parse_path)]
+        snap_dir: Option<PathBuf>,
+        /// Retention duration (e.g., 7d, 30m)
         #[arg(short, long)]
-        keep: Option<HumanDuration>,
+        keep: HumanDuration,
     },
 }
 
 impl Commands {
-    fn execute(
-        self,
-        snap_dir: Option<PathBuf>,
-        toml_subvols: Vec<PathBuf>,
-        toml_cleanup_keep: Option<HumanDuration>,
-    ) -> Result<()> {
+    fn execute(self, snap_dir: Option<PathBuf>, toml_subvols: Vec<PathBuf>) -> Result<()> {
         match self {
             Commands::Create {
                 subvol: cli_subvols,
@@ -106,17 +100,17 @@ impl Commands {
                     create_snapshot(&snap_dir, &sv, ts)?;
                 }
             }
-            Commands::Delete { snap } => {
+            Commands::Delete { snapshot: snap } => {
                 if snap.is_empty() {
                     bail!(
-                        "No snapshots specified. Use --snap <path> to specify snapshots to delete."
+                        "No snapshots specified. Use --snap <path> to specify snapshots to delete, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>"
                     );
                 }
                 for s in snap {
                     delete_snapshot(&s)?;
                 }
             }
-            Commands::List { dir: cli_dir } => {
+            Commands::List { snap_dir: cli_dir } => {
                 let dir = cli_dir.or(snap_dir).ok_or_else(|| {
                     anyhow::anyhow!("Snapshot directory must be specified via --dir or config file")
                 })?;
@@ -133,22 +127,22 @@ impl Commands {
                     list_snapshot(entry)?;
                 }
             }
-            Commands::Cleanup { dir: cli_dir, keep } => {
+            Commands::Cleanup {
+                snap_dir: cli_dir,
+                keep,
+            } => {
                 let dir = cli_dir.or(snap_dir).ok_or_else(|| {
                     anyhow::anyhow!("Snapshot directory must be specified via --dir or config file")
                 })?;
                 if !dir.exists() {
                     bail!("Snapshot directory {} does not exist", dir.display());
                 }
-                let keep_duration = keep.or(toml_cleanup_keep).ok_or_else(|| {
-                    anyhow::anyhow!("Retention duration must be specified via --keep or 'cleanup.keep' in config file")
-                })?;
                 info!(
                     "Cleaning snapshots in {} older than {}",
                     dir.display(),
-                    keep_duration
+                    keep
                 );
-                let cutoff = Utc::now() - Duration::from_std(keep_duration.into())?;
+                let cutoff = Utc::now() - Duration::from_std(keep.into())?;
                 for entry in WalkDir::new(&dir)
                     .max_depth(1)
                     .into_iter()
@@ -243,12 +237,9 @@ fn cleanup_snapshot(entry: walkdir::DirEntry, cutoff: chrono::DateTime<Utc>) -> 
     Ok(())
 }
 
-fn load_config(
-    config_path: Option<PathBuf>,
-) -> Result<(Option<PathBuf>, Vec<PathBuf>, Option<HumanDuration>)> {
+fn load_config(config_path: Option<PathBuf>) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
     let mut snap_dir: Option<PathBuf> = None;
     let mut toml_subvols: Vec<PathBuf> = vec![];
-    let mut toml_cleanup_keep: Option<HumanDuration> = None;
 
     if let Some(path) = config_path {
         if !path.exists() {
@@ -288,17 +279,8 @@ fn load_config(
                     .collect();
             }
         }
-
-        if let Some(cleanup_table) = config_toml.get("cleanup").and_then(|v| v.as_table()) {
-            if let Some(keep_str) = cleanup_table.get("keep").and_then(|v| v.as_str()) {
-                toml_cleanup_keep = Some(keep_str.parse::<HumanDuration>().context(format!(
-                    "Invalid 'cleanup.keep' duration in config: {}",
-                    keep_str
-                ))?);
-            }
-        }
     }
-    Ok((snap_dir, toml_subvols, toml_cleanup_keep))
+    Ok((snap_dir, toml_subvols))
 }
 
 fn parse_path(s: &str) -> Result<PathBuf> {
@@ -306,19 +288,31 @@ fn parse_path(s: &str) -> Result<PathBuf> {
 }
 
 fn parse_timestamp_from_name(name: &str) -> Option<i64> {
-    if let Some(ts_str) = name.rsplitn(2, '-').next() {
-        ts_str.parse::<i64>().ok()
-    } else {
-        None
-    }
+    name.rsplit_once('-')
+        .and_then(|(_name, ts_str)| ts_str.parse::<i64>().ok())
 }
 
 fn main() -> Result<()> {
     env_logger::init();
     info!("Starting btrsnap");
 
-    let cli = Cli::parse();
+    // Parse CLI arguments, handling errors explicitly
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // Print any parsing errors and exit
+            e.print()?;
+            std::process::exit(1);
+        }
+    };
 
+    // If no subcommand is provided, explicitly print help and exit
+    if cli.command.is_none() {
+        Cli::command().print_help()?;
+        return Ok(());
+    }
+
+    // Check for root privileges only if a subcommand is provided
     if !Uid::effective().is_root() {
         bail!("Error: Must run with sudo or as root for BTRFS operations");
     }
@@ -329,12 +323,6 @@ fn main() -> Result<()> {
             .and_then(|s| PathBuf::from(s).canonicalize().ok())
     });
 
-    let (snap_dir, toml_subvols, toml_cleanup_keep) = load_config(config_path)?;
-
-    let command = cli.command.unwrap_or(Commands::Create {
-        subvol: vec![],
-        snap_dir: None,
-    });
-
-    command.execute(snap_dir, toml_subvols, toml_cleanup_keep)
+    let (snap_dir, toml_subvols) = load_config(config_path)?;
+    cli.command.unwrap().execute(snap_dir, toml_subvols)
 }
