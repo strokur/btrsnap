@@ -50,7 +50,7 @@ enum Commands {
     },
     /// Delete specific snapshot(s)
     Delete {
-        /// Path to snapshot (repeatable, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>)
+        /// Path to snapshot (repeatable, e.g., --snap /path/to/btrfs/snapshots/@home-<timestamp>)
         #[arg(short, long, value_parser = parse_path)]
         snap: Vec<PathBuf>,
     },
@@ -72,7 +72,12 @@ enum Commands {
 }
 
 impl Commands {
-    fn execute(self, snap_dir: Option<PathBuf>, toml_subvols: Vec<PathBuf>) -> Result<()> {
+    fn execute(
+        self,
+        snap_dir: Option<PathBuf>,
+        toml_subvols: Vec<PathBuf>,
+        toml_cleanup_keep: Option<HumanDuration>,
+    ) -> Result<()> {
         match self {
             Commands::Create {
                 subvol: cli_subvols,
@@ -104,7 +109,7 @@ impl Commands {
             Commands::Delete { snap } => {
                 if snap.is_empty() {
                     bail!(
-                        "No snapshots specified. Use --snap <path> to specify snapshots to delete, e.g., --snap /mnt/top-level/.snapshots/@nixos-<timestamp>"
+                        "No snapshots specified. Use --snap <path> to specify snapshots to delete."
                     );
                 }
                 for s in snap {
@@ -301,13 +306,11 @@ fn parse_path(s: &str) -> Result<PathBuf> {
 }
 
 fn parse_timestamp_from_name(name: &str) -> Option<i64> {
-    let prefixes = ["@nixos-", "@storage-", "@dotfiles-"];
-    for prefix in prefixes {
-        if let Some(ts_str) = name.strip_prefix(prefix) {
-            return ts_str.parse::<i64>().ok();
-        }
+    if let Some(ts_str) = name.rsplitn(2, '-').next() {
+        ts_str.parse::<i64>().ok()
+    } else {
+        None
     }
-    None
 }
 
 fn main() -> Result<()> {

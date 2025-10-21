@@ -26,17 +26,17 @@ subvolumes, with configuration via TOML files or CLI arguments.
 
 ### Prerequisites
 
-- **Rust**: Version 1.82.0 or later (uses Rust 2024 edition).
-- **BTRFS Filesystem**: A BTRFS filesystem with subvolumes (e.g.,
-  `/mnt/btrfs/@nixos`).
-- **Linux System**: Tested on NixOS; should work on other Linux distributions.
-- **Dependencies**: Managed via `Cargo.toml` (e.g., `clap`, `btrfsutil`,
-  `toml`).
+- `BTRFS Filesystem`: A BTRFS filesystem with subvolumes (e.g.,
+  `/mnt/btrfs/@home`).
+- `Linux System`: Tested on NixOS; should work on other Linux distributions.
+- `btrfs-progs`: Required for `libbtrfsutil` to perform BTRFS operations at
+  runtime. Install via your package manager (e.g.,
+  `sudo apt install btrfs-progs` on Debian/Ubuntu.
 
 ### Build from Source
 
 1. Clone the repository:
    ````bash
-   git clone https://gitlab.com/0FGk3Zb2sY/btrsnap.git
+   git clone https://github.com/strokur/btrsnap.git
    cd btrsnap  ```
    ````
