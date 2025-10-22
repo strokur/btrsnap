@@ -49,19 +49,27 @@ enum Commands {
 }
 
 impl Commands {
-    fn execute(self, snap_dir: Option<PathBuf>, toml_subvols: Vec<PathBuf>) -> Result<()> {
+    fn execute(
+        self,
+        snap_dir: Option<PathBuf>,
+        toml_subvols: Vec<PathBuf>,
+        toml_keep: Option<humantime::Duration>,
+    ) -> Result<()> {
         match self {
             Commands::Create(cmd) => cmd.execute(snap_dir, toml_subvols),
             Commands::Delete(cmd) => cmd.execute(),
             Commands::List(cmd) => cmd.execute(snap_dir),
-            Commands::Cleanup(cmd) => cmd.execute(snap_dir),
+            Commands::Cleanup(cmd) => cmd.execute(snap_dir, toml_keep),
         }
     }
 }
 
-fn load_config(config_path: Option<PathBuf>) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
+fn load_config(
+    config_path: Option<PathBuf>,
+) -> Result<(Option<PathBuf>, Vec<PathBuf>, Option<humantime::Duration>)> {
     let mut snap_dir: Option<PathBuf> = None;
     let mut toml_subvols: Vec<PathBuf> = vec![];
+    let mut toml_keep: Option<humantime::Duration> = None;
 
     if let Some(path) = config_path {
         if !path.exists() {
@@ -101,8 +109,17 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(Option<PathBuf>, Vec<Pat
                     .collect();
             }
         }
+        if let Some(cleanup_table) = config_toml.get("cleanup").and_then(|v| v.as_table()) {
+            if let Some(keep_str) = cleanup_table.get("keep").and_then(|v| v.as_str()) {
+                toml_keep = Some(
+                    keep_str
+                        .parse::<humantime::Duration>()
+                        .context(format!("Invalid 'keep' duration in config: {}", keep_str))?,
+                );
+            }
+        }
     }
-    Ok((snap_dir, toml_subvols))
+    Ok((snap_dir, toml_subvols, toml_keep))
 }
 
 fn parse_path(s: &str) -> Result<PathBuf> {
@@ -140,6 +157,8 @@ fn main() -> Result<()> {
             .and_then(|s| PathBuf::from(s).canonicalize().ok())
     });
 
-    let (snap_dir, toml_subvols) = load_config(config_path)?;
-    cli.command.unwrap().execute(snap_dir, toml_subvols)
+    let (snap_dir, toml_subvols, toml_keep) = load_config(config_path)?;
+    cli.command
+        .unwrap()
+        .execute(snap_dir, toml_subvols, toml_keep)
 }

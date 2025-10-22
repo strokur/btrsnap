@@ -8,29 +8,37 @@ use walkdir::WalkDir;
 
 #[derive(clap::Parser)]
 pub struct Cleanup {
-    /// Snapshot directory to scan
+    /// Snapshot dir to scan (if not set, use config)
     #[arg(short = 'd', long, value_parser = super::parse_path)]
     pub snap_dir: Option<PathBuf>,
     /// Retention duration (e.g., 7d, 30m)
     #[arg(short, long)]
-    pub keep: HumanDuration,
+    pub keep: Option<HumanDuration>,
 }
 
 impl Cleanup {
-    pub fn execute(self, snap_dir: Option<PathBuf>) -> Result<()> {
-        let dir = self
-            .snap_dir
-            .or(snap_dir)
-            .ok_or_else(|| anyhow::anyhow!("Snapshot directory not specified"))?;
+    pub fn execute(
+        self,
+        snap_dir: Option<PathBuf>,
+        toml_keep: Option<HumanDuration>,
+    ) -> Result<()> {
+        let dir = self.snap_dir.or(snap_dir).ok_or_else(|| {
+            anyhow::anyhow!("Snapshot directory must be specified via --dir or config file")
+        })?;
         if !dir.exists() {
             bail!("Snapshot directory {} does not exist", dir.display());
         }
+
+        let keep = self.keep.or(toml_keep).ok_or_else(|| {
+            anyhow::anyhow!("Retention duration must be specified via --keep or config file")
+        })?;
+
         info!(
             "Cleaning snapshots in {} older than {}",
             dir.display(),
-            self.keep
+            keep
         );
-        let cutoff = Utc::now() - Duration::from_std(self.keep.into())?;
+        let cutoff = Utc::now() - Duration::from_std(keep.into())?;
         for entry in WalkDir::new(&dir)
             .max_depth(1)
             .into_iter()
