@@ -1,17 +1,17 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use color_print::cstr;
 use log::info;
 use nix::unistd::Uid;
 use std::env;
-use std::fs;
 use std::path::PathBuf;
-use toml::Value;
 
 mod cleanup;
+pub mod config;
 mod create;
 mod delete;
 mod list;
+pub mod utils;
 
 const AFTER_HELP: &str = cstr!(
     r#"
@@ -52,78 +52,16 @@ impl Commands {
     fn execute(
         self,
         snap_dir: Option<PathBuf>,
-        toml_subvols: Vec<PathBuf>,
-        toml_keep: Option<humantime::Duration>,
+        subvols: Vec<PathBuf>,
+        keep_duration: Option<humantime::Duration>,
     ) -> Result<()> {
         match self {
-            Commands::Create(cmd) => cmd.execute(snap_dir, toml_subvols),
+            Commands::Create(cmd) => cmd.execute(snap_dir, subvols),
             Commands::Delete(cmd) => cmd.execute(),
             Commands::List(cmd) => cmd.execute(snap_dir),
-            Commands::Cleanup(cmd) => cmd.execute(snap_dir, toml_keep),
+            Commands::Cleanup(cmd) => cmd.execute(snap_dir, keep_duration),
         }
     }
-}
-
-fn load_config(
-    config_path: Option<PathBuf>,
-) -> Result<(Option<PathBuf>, Vec<PathBuf>, Option<humantime::Duration>)> {
-    let mut snap_dir: Option<PathBuf> = None;
-    let mut toml_subvols: Vec<PathBuf> = vec![];
-    let mut toml_keep: Option<humantime::Duration> = None;
-
-    if let Some(path) = config_path {
-        if !path.exists() {
-            bail!("Config file not found: {}", path.display());
-        }
-        let content = fs::read_to_string(&path)
-            .context(format!("Failed to read config file: {}", path.display()))?;
-        let config_toml: Value = toml::from_str(&content).context("Invalid TOML in config file")?;
-
-        let snap_str = config_toml
-            .get("snap-dir")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'snap-dir' in config file"))?;
-        snap_dir = Some(
-            PathBuf::from(snap_str)
-                .canonicalize()
-                .context("Invalid 'snap-dir' path in config")?,
-        );
-
-        let names_arr = config_toml.get("subvol-names").and_then(|v| v.as_array());
-        if let Some(names) = names_arr {
-            let subvol_names: Vec<String> = names
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            if !subvol_names.is_empty() {
-                let base_str = config_toml
-                    .get("subvol-base")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'subvol-base' in config file (required when 'subvol-names' is provided)"))?;
-                let subvol_base = PathBuf::from(base_str)
-                    .canonicalize()
-                    .context("Invalid 'subvol-base' path in config")?;
-                toml_subvols = subvol_names
-                    .iter()
-                    .map(|name| subvol_base.join(name))
-                    .collect();
-            }
-        }
-        if let Some(cleanup_table) = config_toml.get("cleanup").and_then(|v| v.as_table()) {
-            if let Some(keep_str) = cleanup_table.get("keep").and_then(|v| v.as_str()) {
-                toml_keep = Some(
-                    keep_str
-                        .parse::<humantime::Duration>()
-                        .context(format!("Invalid 'keep' duration in config: {}", keep_str))?,
-                );
-            }
-        }
-    }
-    Ok((snap_dir, toml_subvols, toml_keep))
-}
-
-fn parse_path(s: &str) -> Result<PathBuf> {
-    PathBuf::from(s).canonicalize().context("Invalid path")
 }
 
 fn main() -> Result<()> {
@@ -157,7 +95,7 @@ fn main() -> Result<()> {
             .and_then(|s| PathBuf::from(s).canonicalize().ok())
     });
 
-    let (snap_dir, toml_subvols, toml_keep) = load_config(config_path)?;
+    let (snap_dir, toml_subvols, toml_keep) = config::load(config_path)?;
     cli.command
         .unwrap()
         .execute(snap_dir, toml_subvols, toml_keep)

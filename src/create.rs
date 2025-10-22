@@ -1,3 +1,4 @@
+use crate::utils;
 use anyhow::{Context, Result, bail};
 use btrfsutil::subvolume::{SnapshotFlags, Subvolume};
 use chrono::Utc;
@@ -8,27 +9,20 @@ use std::path::PathBuf;
 #[derive(clap::Parser)]
 pub struct Create {
     /// Path to subvolume (repeatable)
-    #[arg(short = 'v', long, value_parser = super::parse_path)]
+    #[arg(short = 'v', long, value_parser = utils::parse_path)]
     pub subvol: Vec<PathBuf>,
     /// Snapshot directory
-    #[arg(short = 'd', long, value_parser = super::parse_path)]
+    #[arg(short = 'd', long, value_parser = utils::parse_path)]
     pub snap_dir: Option<PathBuf>,
 }
 
 impl Create {
-    pub fn execute(self, snap_dir: Option<PathBuf>, toml_subvols: Vec<PathBuf>) -> Result<()> {
-        let snap_dir = self
-            .snap_dir
-            .or(snap_dir)
-            .ok_or_else(|| anyhow::anyhow!("Snapshot directory not specified"))?;
-        if !snap_dir.exists() {
-            bail!("Snapshot directory {} does not exist", snap_dir.display());
-        }
-
+    pub fn execute(self, snap_dir: Option<PathBuf>, subvols: Vec<PathBuf>) -> Result<()> {
+        let snap_dir = utils::resolve_snap_dir(self.snap_dir, snap_dir)?;
         let subvols_to_snap = if !self.subvol.is_empty() {
             self.subvol
-        } else if !toml_subvols.is_empty() {
-            toml_subvols
+        } else if !subvols.is_empty() {
+            subvols
         } else {
             bail!("Subvolumes not specified");
         };

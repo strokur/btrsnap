@@ -1,3 +1,4 @@
+use crate::utils;
 use anyhow::{Context, Result, bail};
 use btrfsutil::subvolume::{DeleteFlags, Subvolume};
 use log::debug;
@@ -6,7 +7,7 @@ use std::path::PathBuf;
 #[derive(clap::Parser)]
 pub struct Delete {
     /// Path to snapshot (repeatable)
-    #[arg(short, long, value_parser = super::parse_path)]
+    #[arg(short, long, value_parser = utils::parse_path)]
     pub snapshot: Vec<PathBuf>,
 }
 
