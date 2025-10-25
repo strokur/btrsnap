@@ -36,7 +36,20 @@ subvolumes, with configuration via TOML files or CLI arguments.
 ### Build from Source
 
 1. Clone the repository:
+
    ````bash
    git clone https://github.com/strokur/btrsnap.git
    cd btrsnap  ```
    ````
+
+2. Build
+
+   ```bash
+   cargo build --release
+   ```
+
+3. copy the btrsnap binary to a directory in your path
+
+```bash
+cp target/release/btrsnap /usr/local/bin/
+```
