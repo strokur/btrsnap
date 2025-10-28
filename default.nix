@@ -17,6 +17,7 @@ pkgs.rustPlatform.buildRustPackage {
   LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
   BINDGEN_EXTRA_CLANG_ARGS = "-I${pkgs.glibc.dev}/include";
   meta = with pkgs.lib; {
+    mainProgram = "btrsnap";
     description = "A command-line tool for managing BTRFS snapshots";
     homepage = "https://gitlab.com/0FGk3Zb2sY/btrsnap";
     license = licenses.mit;
