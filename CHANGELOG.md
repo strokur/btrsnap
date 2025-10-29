@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0] - 2025-10-29
+
+### Changed
+
+- Instead of using a timestamp in the snapshot name, cleanup using the snapshot
+  modification time.
+- Now using local systme time instead of Utc time.
+- Removed "cleanup" table from the toml file. Now "keep" is a top-level option.
+
 ## [0.2.0] - 2025-10-25
 
 ### Added

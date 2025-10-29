@@ -1,9 +1,10 @@
 use crate::utils;
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use btrfsutil::subvolume::{DeleteFlags, Subvolume};
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local};
 use humantime::Duration as HumanDuration;
 use log::{debug, info};
+use std::fs;
 use std::path::PathBuf;
 use walkdir::DirEntry;
 
@@ -34,35 +35,51 @@ impl Cleanup {
             snap_dir.display(),
             keep
         );
-        let cutoff = Utc::now() - Duration::from_std(keep.into())?;
+        let cutoff = Local::now() - Duration::from_std(keep.into())?;
         utils::scan_snapshots(&snap_dir, |entry| cleanup_snapshot(entry, cutoff))?;
         Ok(())
     }
 }
 
-fn cleanup_snapshot(entry: DirEntry, cutoff: DateTime<Utc>) -> Result<()> {
+fn cleanup_snapshot(entry: DirEntry, cutoff: DateTime<Local>) -> Result<()> {
     debug!("Checking path: {}", entry.path().display());
-    let ts_str = match entry.path().file_name().and_then(|n| n.to_str()) {
-        Some(ts_str) => ts_str,
-        None => return Ok(()),
-    };
-    let ts = match parse_timestamp_from_name(ts_str) {
-        Some(ts) => ts,
-        None => return Ok(()),
-    };
-    if Utc.timestamp_opt(ts, 0).single() >= Some(cutoff) {
+
+    // Get the modification time from file system metadata
+    let metadata = fs::metadata(entry.path()).context(format!(
+        "Failed to read metadata for {}",
+        entry.path().display()
+    ))?;
+    let mtime = metadata.modified().context(format!(
+        "Failed to get modification time for {}",
+        entry.path().display()
+    ))?;
+
+    // Convert SystemTime to DateTime<Local>
+    let mtime_local: DateTime<Local> = DateTime::from(mtime);
+
+    // Check if snapshot is newer than or equal to cutoff
+    if mtime_local >= cutoff {
+        debug!(
+            "Snapshot {} is newer than cutoff, keeping",
+            entry.path().display()
+        );
         return Ok(());
     }
+
+    // Verify it's a BTRFS subvolume
     let subvol = match Subvolume::get(entry.path()) {
         Ok(subvol) => subvol,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            debug!(
+                "Path {} is not a BTRFS subvolume, skipping",
+                entry.path().display()
+            );
+            return Ok(());
+        }
     };
+
+    // Delete the snapshot
     subvol.delete(DeleteFlags::empty())?;
     println!("Cleaned: {}", entry.path().display());
     Ok(())
-}
-
-fn parse_timestamp_from_name(name: &str) -> Option<i64> {
-    name.split_once('-')
-        .and_then(|(_, ts_str)| ts_str.parse::<i64>().ok())
 }

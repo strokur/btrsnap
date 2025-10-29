@@ -65,12 +65,11 @@ fn parse_subvols(config: &Value, path: &PathBuf) -> Result<Vec<PathBuf>> {
 }
 
 fn parse_keep_duration(config: &Value) -> Result<Option<humantime::Duration>> {
-    if let Some(cleanup_table) = config.get("cleanup").and_then(|v| v.as_table()) {
-        if let Some(keep_str) = cleanup_table.get("keep").and_then(|v| v.as_str()) {
-            return Ok(Some(keep_str.parse::<humantime::Duration>().context(
-                format!("Invalid 'keep' duration in config: {}", keep_str),
-            )?));
-        }
+    if let Some(keep_str) = config.get("keep").and_then(|v| v.as_str()) {
+        let duration = humantime::parse_duration(keep_str)
+            .context(format!("Invalid 'keep' duration in config: {}", keep_str))?;
+        Ok(Some(duration.into()))
+    } else {
+        Ok(None)
     }
-    Ok(None)
 }

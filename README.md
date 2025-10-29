@@ -12,7 +12,7 @@ subvolumes, with configuration via TOML files or CLI arguments.
 - **Delete Snapshots**: Remove specific snapshots by path.
 - **List Snapshots**: Display snapshot details (path, generation, otime).
 - **Cleanup Snapshots**: Remove snapshots older than a specified duration (e.g.,
-  `7d`), configurable via TOML or CLI.
+  `7d`).
 - **TOML Configuration**: Define subvolumes, snapshot directories, and cleanup
   retention in a TOML file.
 - **Environment Variable**: Use `BTRSNAP_CONFIG` to specify the TOML file path.

@@ -1,7 +1,7 @@
 use crate::utils;
 use anyhow::{Context, Result, bail};
 use btrfsutil::subvolume::{SnapshotFlags, Subvolume};
-use chrono::Utc;
+use chrono::Local;
 use log::{debug, info};
 use std::fs;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ impl Create {
         };
 
         info!("Creating snapshots in {}", snap_dir.display());
-        let ts = Utc::now().timestamp();
+        let ts = Local::now().timestamp();
         for sv in subvols_to_snap {
             create_snapshot(&snap_dir, &sv, ts)?;
         }
